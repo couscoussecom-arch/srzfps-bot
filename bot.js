@@ -11,10 +11,10 @@ import { JSONFilePreset } from 'lowdb/node';
 
 // ─── CONFIG ─────────────────────────────────────────────
 const CONFIG = {
-  TOKEN:        'process.env.TOKEN',
-  CLIENT_ID:    'process.env.CLIENT_ID',
-  GUILD_ID:     'process.env.GUILD_ID',
-  GAME_URL:     'process.env.GAME_URL',
+  TOKEN:        process.env.TOKEN,
+  CLIENT_ID:    process.env.CLIENT_ID,
+  GUILD_ID:     process.env.GUILD_ID,
+  GAME_URL:     process.env.GAME_URL,
   DAILY_POINTS: 50,
   WIN_POINTS:   200,
   KILL_POINTS:  25,
