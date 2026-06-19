@@ -11,10 +11,10 @@ import { JSONFilePreset } from 'lowdb/node';
 
 // ─── CONFIG ─────────────────────────────────────────────
 const CONFIG = {
-  TOKEN:        'VOTRE_TOKEN_BOT_ICI',
-  CLIENT_ID:    'VOTRE_CLIENT_ID_ICI',
-  GUILD_ID:     'VOTRE_GUILD_ID_ICI',
-  GAME_URL:     'https://TON-PSEUDO.github.io/srzfps/',
+  TOKEN: process.env.TOKEN,
+  CLIENT_ID:    '1516884532069007380',
+  GUILD_ID:     '1516769445023060121',
+  GAME_URL:     'https://euphonious-lamington-7cbdb1.netlify.app',
   DAILY_POINTS: 50,
   WIN_POINTS:   200,
   KILL_POINTS:  25,
