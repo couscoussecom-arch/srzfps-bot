@@ -1,0 +1,428 @@
+// ═══════════════════════════════════════════════════════
+//  SRZFPS BOT DISCORD - bot.js v3
+//  Installe: npm install discord.js node-fetch
+//  Lance: node bot.js
+// ═══════════════════════════════════════════════════════
+
+import { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder,
+  ButtonBuilder, ButtonStyle, SlashCommandBuilder, REST, Routes,
+  PermissionFlagsBits } from 'discord.js';
+import fetch from 'node-fetch';
+
+// ─── CONFIG ─────────────────────────────────────────────
+const CONFIG = {
+  TOKEN:        process.env.TOKEN,
+  CLIENT_ID:    '1516884532069007380',
+  GUILD_ID:     '1516769445023060121',
+  GAME_URL:     'https://couscoussecom-arch.github.io/srzfps/',
+  JSONBIN_ID:   process.env.JSONBIN_ID,
+  JSONBIN_KEY:  process.env.JSONBIN_KEY,
+  DAILY_POINTS: 50,
+  WIN_POINTS:   200,
+  KILL_POINTS:  25,
+};
+
+// ─── DATABASE (JSONbin.io — persiste entre les redémarrages) ─
+let dbCache = null;
+
+async function dbRead() {
+  if (dbCache) return dbCache;
+  try {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${CONFIG.JSONBIN_ID}/latest`, {
+      headers: { 'X-Master-Key': CONFIG.JSONBIN_KEY }
+    });
+    const json = await res.json();
+    dbCache = json.record;
+    return dbCache;
+  } catch(e) {
+    console.error('DB read error:', e);
+    return { players: {}, matches: [] };
+  }
+}
+
+async function dbWrite(data) {
+  dbCache = data;
+  try {
+    await fetch(`https://api.jsonbin.io/v3/b/${CONFIG.JSONBIN_ID}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Master-Key': CONFIG.JSONBIN_KEY
+      },
+      body: JSON.stringify(data)
+    });
+  } catch(e) {
+    console.error('DB write error:', e);
+  }
+}
+
+// ─── HELPERS ─────────────────────────────────────────────
+async function getOrCreate(id, username) {
+  const db = await dbRead();
+  if (!db.players[id]) {
+    db.players[id] = {
+      id, username,
+      points: 0, wins: 0, losses: 0,
+      kills: 0, deaths: 0, last_daily: null,
+      created_at: new Date().toISOString()
+    };
+    await dbWrite(db);
+  }
+  return db.players[id];
+}
+
+function getRank(pts) {
+  if (pts < 500)   return { name: '🥉 Bronze',  color: 0xCD7F32, emoji: '🥉' };
+  if (pts < 1500)  return { name: '🥈 Argent',  color: 0xC0C0C0, emoji: '🥈' };
+  if (pts < 3000)  return { name: '🥇 Or',      color: 0xFFD700, emoji: '🥇' };
+  if (pts < 6000)  return { name: '💎 Diamant', color: 0x00BFFF, emoji: '💎' };
+  if (pts < 10000) return { name: '👑 Master',  color: 0x9B59B6, emoji: '👑' };
+  return                  { name: '🌟 Légende', color: 0xFF6B35, emoji: '🌟' };
+}
+
+async function addPts(id, amount, username) {
+  const db = await dbRead();
+  if (!db.players[id]) await getOrCreate(id, username);
+  db.players[id].points += amount;
+  db.players[id].username = username;
+  await dbWrite(db);
+  return db.players[id].points;
+}
+
+// ─── COMMANDS ────────────────────────────────────────────
+const commands = [
+  new SlashCommandBuilder().setName('srzfps').setDescription('📋 Panneau de commande SRZFPS'),
+  new SlashCommandBuilder().setName('profil').setDescription('👤 Voir un profil')
+    .addUserOption(o => o.setName('joueur').setDescription('Le joueur (optionnel)')),
+  new SlashCommandBuilder().setName('classement').setDescription('🏆 Top classement du serveur'),
+  new SlashCommandBuilder().setName('daily').setDescription('🎁 Réclame tes +50 pts journaliers'),
+  new SlashCommandBuilder().setName('jouer').setDescription('🎮 Créer ou rejoindre une partie 1v1')
+    .addStringOption(o => o.setName('code').setDescription('Code de partie à rejoindre (vide = créer)')),
+  new SlashCommandBuilder().setName('resultat').setDescription('📊 Enregistrer le résultat d\'une partie')
+    .addStringOption(o => o.setName('code').setDescription('Code de la partie').setRequired(true))
+    .addUserOption(o => o.setName('gagnant').setDescription('Le gagnant').setRequired(true))
+    .addIntegerOption(o => o.setName('kills_gagnant').setDescription('Kills du gagnant'))
+    .addIntegerOption(o => o.setName('kills_perdant').setDescription('Kills du perdant')),
+  new SlashCommandBuilder().setName('aide').setDescription('❓ Ouvrir un ticket de support'),
+  new SlashCommandBuilder().setName('admin_points').setDescription('🔧 [ADMIN] Modifier les points')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addUserOption(o => o.setName('joueur').setDescription('Le joueur').setRequired(true))
+    .addIntegerOption(o => o.setName('points').setDescription('Montant (négatif pour retirer)').setRequired(true)),
+];
+
+async function registerCommands() {
+  const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
+  await rest.put(Routes.applicationGuildCommands(CONFIG.CLIENT_ID, CONFIG.GUILD_ID), {
+    body: commands.map(c => c.toJSON())
+  });
+  console.log('✅ Commandes enregistrées !');
+}
+
+// ─── CLIENT ──────────────────────────────────────────────
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+});
+
+client.on('ready', async () => {
+  console.log(`✅ ${client.user.tag} est en ligne !`);
+  client.user.setActivity('SRZFPS | /srzfps', { type: 0 });
+  await dbRead(); // précharge la DB au démarrage
+  await registerCommands();
+});
+
+// ─── INTERACTIONS ────────────────────────────────────────
+client.on('interactionCreate', async (interaction) => {
+  const { user } = interaction;
+
+  // ══ SLASH COMMANDS ══
+  if (interaction.isChatInputCommand()) {
+    const cmd = interaction.commandName;
+    await interaction.deferReply({ ephemeral: ['profil','daily','admin_points'].includes(cmd) ? false : false });
+
+    // /srzfps
+    if (cmd === 'srzfps') {
+      const embed = new EmbedBuilder()
+        .setColor(0x00D4FF)
+        .setTitle('🎮 SRZFPS — Panneau de Commande')
+        .setDescription('Bienvenue sur **SRZFPS**, le FPS compétitif du serveur !')
+        .addFields(
+          { name: '⚔️ Comment faire un 1v1', value: '1. Tape `/jouer` → tu reçois un code\n2. Partage le code à ton adversaire\n3. Il tape `/jouer code:SRZ-XXXX`\n4. Après la partie, tape `/resultat` pour les points', inline: false },
+          { name: '🎯 Training', value: 'Ouvre le jeu et choisis **Training** pour t\'entraîner sur des cibles', inline: false },
+          { name: '📋 Commandes', value: '`/jouer` — Créer/rejoindre une partie\n`/classement` — Top du serveur\n`/profil` — Voir un profil\n`/daily` — +50 pts/jour\n`/resultat` — Enregistrer une victoire', inline: false },
+          { name: '🏆 Rangs', value: '🥉 Bronze → 🥈 Argent → 🥇 Or → 💎 Diamant → 👑 Master → 🌟 Légende', inline: false }
+        ).setTimestamp();
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setLabel('🎮 Jouer').setStyle(ButtonStyle.Link).setURL(CONFIG.GAME_URL),
+        new ButtonBuilder().setCustomId('btn_classement').setLabel('🏆 Classement').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('btn_daily').setLabel('🎁 Daily').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('btn_profil').setLabel('👤 Mon Profil').setStyle(ButtonStyle.Secondary),
+      );
+      await interaction.editReply({ embeds: [embed], components: [row] });
+    }
+
+    // /profil
+    else if (cmd === 'profil') {
+      const target = interaction.options.getUser('joueur') || user;
+      const db = await dbRead();
+      const p = db.players[target.id] || await getOrCreate(target.id, target.username);
+      const rank = getRank(p.points);
+      const kd = p.deaths > 0 ? (p.kills / p.deaths).toFixed(2) : p.kills.toString();
+      const wr = (p.wins + p.losses) > 0 ? Math.round(p.wins / (p.wins + p.losses) * 100) + '%' : 'N/A';
+      const embed = new EmbedBuilder()
+        .setColor(rank.color)
+        .setTitle(`${rank.emoji} Profil de ${target.username}`)
+        .setThumbnail(target.displayAvatarURL({ size: 128 }))
+        .addFields(
+          { name: '🏅 Rang',      value: `**${rank.name}**`,                 inline: true },
+          { name: '⭐ Points',    value: `**${p.points.toLocaleString()}**`,  inline: true },
+          { name: '🎮 Parties',   value: `${p.wins + p.losses}`,             inline: true },
+          { name: '🏆 Victoires', value: `${p.wins}`,                        inline: true },
+          { name: '💀 Défaites',  value: `${p.losses}`,                      inline: true },
+          { name: '📊 Win Rate',  value: wr,                                 inline: true },
+          { name: '⚔️ Kills',    value: `${p.kills}`,                        inline: true },
+          { name: '☠️ Deaths',   value: `${p.deaths}`,                       inline: true },
+          { name: '📈 K/D',      value: `**${kd}**`,                         inline: true },
+        ).setTimestamp();
+      await interaction.editReply({ embeds: [embed] });
+    }
+
+    // /classement
+    else if (cmd === 'classement') {
+      const db = await dbRead();
+      const players = Object.values(db.players).sort((a, b) => b.points - a.points).slice(0, 10);
+      if (players.length === 0) return interaction.editReply({ content: 'Aucun joueur encore !' });
+      const medals = ['🥇', '🥈', '🥉'];
+      const lines = players.map((p, i) => {
+        const rank = getRank(p.points);
+        return `${medals[i] || `**${i+1}.**`} **${p.username}** ${rank.emoji} — ${p.points.toLocaleString()} pts | ${p.wins}V/${p.losses}D`;
+      });
+      const embed = new EmbedBuilder()
+        .setColor(0xFFD700).setTitle('🏆 Classement SRZFPS')
+        .setDescription(lines.join('\n'))
+        .setFooter({ text: 'Joue des 1v1 pour monter !' }).setTimestamp();
+      await interaction.editReply({ embeds: [embed], components: [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setLabel('🎮 Jouer').setStyle(ButtonStyle.Link).setURL(CONFIG.GAME_URL)
+        )
+      ]});
+    }
+
+    // /daily
+    else if (cmd === 'daily') {
+      const db = await dbRead();
+      const p = db.players[user.id] || await getOrCreate(user.id, user.username);
+      const today = new Date().toISOString().split('T')[0];
+      if (p.last_daily === today) {
+        const heures = Math.ceil((new Date().setHours(24,0,0,0) - Date.now()) / 3600000);
+        return interaction.editReply({ content: `⏰ Déjà réclamé ! Reviens dans **${heures}h**` });
+      }
+      const newPts = await addPts(user.id, CONFIG.DAILY_POINTS, user.username);
+      const db2 = await dbRead();
+      db2.players[user.id].last_daily = today;
+      await dbWrite(db2);
+      const embed = new EmbedBuilder()
+        .setColor(0x00FF88).setTitle('🎁 Points Journaliers !')
+        .setDescription(`**+${CONFIG.DAILY_POINTS} points** reçus !`)
+        .addFields(
+          { name: '⭐ Total', value: `${newPts.toLocaleString()} pts`, inline: true },
+          { name: '🏅 Rang',  value: getRank(newPts).name,            inline: true },
+        ).setFooter({ text: 'Reviens demain !' }).setTimestamp();
+      await interaction.editReply({ embeds: [embed] });
+    }
+
+    // /jouer
+    else if (cmd === 'jouer') {
+      const code = interaction.options.getString('code');
+      await getOrCreate(user.id, user.username);
+      let gameUrl, description;
+      if (code) {
+        const clean = code.toUpperCase();
+        gameUrl = `${CONFIG.GAME_URL}?code=${clean}&player=${encodeURIComponent(user.username)}`;
+        description = `Rejoins la partie **\`${clean}\`** en cliquant sur le bouton !`;
+      } else {
+        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        const newCode = 'SRZ-' + Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+        gameUrl = `${CONFIG.GAME_URL}?code=${newCode}&player=${encodeURIComponent(user.username)}&host=1`;
+        description = `**${user.username}** crée une partie !\n\n🔑 Code : **\`${newCode}\`**\n\nTon adversaire tape : \`/jouer code:${newCode}\``;
+      }
+      const embed = new EmbedBuilder()
+        .setColor(0x7C3AED).setTitle('⚔️ Partie 1v1 SRZFPS')
+        .setDescription(description)
+        .addFields(
+          { name: '🏆 Récompenses', value: `Victoire → **+${CONFIG.WIN_POINTS} pts**\nPar kill → **+${CONFIG.KILL_POINTS} pts**`, inline: false },
+          { name: '📊 Après la partie', value: 'Tape `/resultat` pour enregistrer le score et recevoir tes points !', inline: false },
+        ).setTimestamp();
+      await interaction.editReply({ embeds: [embed], components: [
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setLabel('🎮 Rejoindre la partie').setStyle(ButtonStyle.Link).setURL(gameUrl)
+        )
+      ]});
+    }
+
+    // /resultat
+    else if (cmd === 'resultat') {
+      const code   = interaction.options.getString('code').toUpperCase();
+      const winner = interaction.options.getUser('gagnant');
+      const killsW = interaction.options.getInteger('kills_gagnant') || 0;
+      const killsL = interaction.options.getInteger('kills_perdant') || 0;
+      const loser  = winner.id === user.id ? null : user;
+
+      await getOrCreate(winner.id, winner.username);
+      const gainTotal = CONFIG.WIN_POINTS + killsW * CONFIG.KILL_POINTS;
+      const newPts = await addPts(winner.id, gainTotal, winner.username);
+      const db = await dbRead();
+      db.players[winner.id].wins++;
+      db.players[winner.id].kills  += killsW;
+      db.players[winner.id].deaths += killsL;
+
+      if (loser) {
+        await getOrCreate(loser.id, loser.username);
+        db.players[loser.id].losses++;
+        db.players[loser.id].kills  += killsL;
+        db.players[loser.id].deaths += killsW;
+        db.players[loser.id].points += killsL * CONFIG.KILL_POINTS;
+      }
+
+      db.matches.push({ code, winner_id: winner.id, killsW, killsL, date: new Date().toISOString() });
+      await dbWrite(db);
+
+      const rank = getRank(newPts);
+      const embed = new EmbedBuilder()
+        .setColor(0x00D4FF).setTitle(`🏆 Résultat — ${code}`)
+        .setDescription(`**${winner.username}** remporte la partie !`)
+        .addFields(
+          { name: '🏆 Gagnant', value: `${winner.username} — ${killsW} kills`,                         inline: true },
+          { name: '💀 Perdant', value: loser ? `${loser.username} — ${killsL} kills` : 'Non renseigné', inline: true },
+          { name: '⭐ Gain',    value: `+${gainTotal} pts`,                                             inline: false },
+          { name: '📊 Total',   value: `${newPts.toLocaleString()} pts`,                                inline: true },
+          { name: '🏅 Rang',    value: rank.name,                                                       inline: true },
+        ).setTimestamp();
+      await interaction.editReply({ embeds: [embed] });
+    }
+
+    // /aide
+    else if (cmd === 'aide') {
+      const embed = new EmbedBuilder()
+        .setColor(0x00D4FF).setTitle('# ❓ Aide & Support SRZFPS')
+        .setDescription('> Tu as un problème ? On est là pour t\'aider !')
+        .addFields(
+          { name: '🎫 Ouvrir un ticket', value: 'Clique sur le bouton ci-dessous pour créer un salon privé avec le staff.', inline: false },
+          { name: '🤖 Assistance IA', value: 'Le bot répond automatiquement aux questions fréquentes dans ton ticket !', inline: false },
+          { name: '📋 FAQ Rapide', value: '• Points manquants → `/resultat` après la partie\n• Faire un 1v1 → `/jouer`\n• Points journaliers → `/daily`\n• Voir son profil → `/profil`', inline: false },
+        ).setTimestamp();
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('btn_ticket').setLabel('🎫 Ouvrir un ticket').setStyle(ButtonStyle.Primary),
+      );
+      await interaction.editReply({ embeds: [embed], components: [row] });
+    }
+
+    // /admin_points
+    else if (cmd === 'admin_points') {
+      const target = interaction.options.getUser('joueur');
+      const pts    = interaction.options.getInteger('points');
+      const total  = await addPts(target.id, pts, target.username);
+      await interaction.editReply({
+        content: `✅ **${pts > 0 ? '+' : ''}${pts}** pts → **${target.username}** a maintenant **${total}** pts`
+      });
+    }
+  }
+
+  // ══ BOUTONS ══
+  if (interaction.isButton()) {
+
+    if (interaction.customId === 'btn_classement') {
+      const db = await dbRead();
+      const players = Object.values(db.players).sort((a, b) => b.points - a.points).slice(0, 10);
+      if (!players.length) return interaction.reply({ content: 'Aucun joueur !', ephemeral: true });
+      const medals = ['🥇', '🥈', '🥉'];
+      const lines = players.map((p, i) => `${medals[i] || `**${i+1}.**`} **${p.username}** ${getRank(p.points).emoji} — ${p.points.toLocaleString()} pts`);
+      await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xFFD700).setTitle('🏆 Classement').setDescription(lines.join('\n'))], ephemeral: true });
+    }
+
+    else if (interaction.customId === 'btn_daily') {
+      const db = await dbRead();
+      const p = db.players[user.id] || await getOrCreate(user.id, user.username);
+      const today = new Date().toISOString().split('T')[0];
+      if (p.last_daily === today) return interaction.reply({ content: '⏰ Déjà réclamé aujourd\'hui !', ephemeral: true });
+      const newPts = await addPts(user.id, CONFIG.DAILY_POINTS, user.username);
+      const db2 = await dbRead();
+      db2.players[user.id].last_daily = today;
+      await dbWrite(db2);
+      await interaction.reply({ content: `🎁 **+${CONFIG.DAILY_POINTS} pts** ! Total : **${newPts}** pts`, ephemeral: true });
+    }
+
+    else if (interaction.customId === 'btn_profil') {
+      const db = await dbRead();
+      const p = db.players[user.id] || await getOrCreate(user.id, user.username);
+      const rank = getRank(p.points);
+      const kd = p.deaths > 0 ? (p.kills / p.deaths).toFixed(2) : p.kills.toString();
+      await interaction.reply({
+        embeds: [new EmbedBuilder().setColor(rank.color).setTitle(`${rank.emoji} ${user.username}`).addFields(
+          { name: '🏅 Rang',    value: rank.name,                inline: true },
+          { name: '⭐ Points',  value: p.points.toLocaleString(), inline: true },
+          { name: '🎮 Parties', value: `${p.wins + p.losses}`,   inline: true },
+          { name: '⚔️ Kills',  value: `${p.kills}`,              inline: true },
+          { name: '📈 K/D',    value: kd,                        inline: true },
+          { name: '🏆 W/L',    value: `${p.wins}/${p.losses}`,   inline: true },
+        )], ephemeral: true
+      });
+    }
+
+    else if (interaction.customId === 'btn_ticket') {
+      const guild = interaction.guild;
+      const safeName = user.username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20);
+      const existing = guild.channels.cache.find(c => c.name === `ticket-${safeName}`);
+      if (existing) return interaction.reply({ content: `❌ Tu as déjà un ticket ouvert : ${existing}`, ephemeral: true });
+      const ticketChannel = await guild.channels.create({
+        name: `ticket-${safeName}`, type: 0,
+        parent: interaction.channel.parentId,
+        permissionOverwrites: [
+          { id: guild.roles.everyone, deny: ['ViewChannel'] },
+          { id: user.id, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'] },
+          { id: guild.members.me.id, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory', 'ManageChannels'] },
+        ],
+      });
+      const embed = new EmbedBuilder()
+        .setColor(0x00D4FF).setTitle('🎫 Ticket de Support SRZFPS')
+        .setDescription(`Bonjour **${user.username}** !\n\nDécris ton problème et le staff te répondra dès que possible.\n\n> 🤖 Le bot répond automatiquement aux questions fréquentes !`)
+        .addFields({ name: '📋 Questions fréquentes', value: '• Points manquants → `/resultat` après chaque partie\n• Bug → décris-le ici\n• Signaler un joueur → donne son pseudo' })
+        .setFooter({ text: 'Un admin fermera ce ticket une fois résolu.' });
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('btn_close_ticket').setLabel('🔒 Fermer le ticket').setStyle(ButtonStyle.Danger),
+      );
+      await ticketChannel.send({ content: `<@${user.id}>`, embeds: [embed], components: [row] });
+      await interaction.reply({ content: `✅ Ticket créé : ${ticketChannel}`, ephemeral: true });
+    }
+
+    else if (interaction.customId === 'btn_close_ticket') {
+      if (!interaction.channel.name.startsWith('ticket-')) return;
+      await interaction.reply({ content: '🔒 Ticket fermé — suppression dans 5 secondes...' });
+      setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
+    }
+  }
+});
+
+// ─── ASSISTANCE IA DANS LES TICKETS ─────────────────────
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+  if (!message.channel.name?.startsWith('ticket-')) return;
+  const c = message.content.toLowerCase();
+  let rep = null;
+  if (c.includes('point') && (c.includes('reçu') || c.includes('manque') || c.includes('pas')))
+    rep = '💡 **Points manquants ?**\nAprès chaque partie, tape `/resultat code:TON-CODE gagnant:@pseudo` pour distribuer les points !';
+  else if (c.includes('triche') || c.includes('cheat') || c.includes('hack'))
+    rep = '🚨 **Signalement**\nDonne le pseudo exact du joueur + une preuve si possible. Un admin va examiner ça !';
+  else if (c.includes('1v1') || c.includes('rejoindre') || c.includes('code'))
+    rep = '🎮 **Comment faire un 1v1 ?**\n1. `/jouer` → tu reçois un code\n2. Partage-le\n3. L\'adversaire tape `/jouer code:SRZ-XXXX`\n4. Après la partie → `/resultat`';
+  else if (c.includes('rang') || c.includes('monter') || c.includes('classement'))
+    rep = '🏆 **Rangs**\n🥉 Bronze — 0 pts | 🥈 Argent — 500 | 🥇 Or — 1500 | 💎 Diamant — 3000 | 👑 Master — 6000 | 🌟 Légende — 10000';
+  else if (c.includes('daily') || c.includes('journalier'))
+    rep = '🎁 Tape `/daily` une fois par jour pour **+50 points** !';
+  else if (c.includes('bug') || c.includes('marche pas') || c.includes('fonctionne pas'))
+    rep = '🔧 **Bug ?**\nDécris :\n• Quel navigateur ?\n• Que se passe-t-il exactement ?\n• Est-ce que ça arrive à chaque fois ?';
+  if (rep) {
+    await message.reply({ embeds: [new EmbedBuilder().setColor(0x7C3AED).setTitle('🤖 Assistance IA').setDescription(rep).setFooter({ text: 'Réponse automatique • Un admin peut aussi aider !' })] });
+  }
+});
+
+client.login(CONFIG.TOKEN);
