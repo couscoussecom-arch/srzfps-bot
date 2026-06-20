@@ -14,7 +14,7 @@ const CONFIG = {
   TOKEN: process.env.TOKEN,
   CLIENT_ID:    '1516884532069007380',
   GUILD_ID:     '1516769445023060121',
-  GAME_URL:     'https://euphonious-lamington-7cbdb1.netlify.app',
+  GAME_URL:     'https://couscoussecom-arch.github.io/srzfps/',
   DAILY_POINTS: 50,
   WIN_POINTS:   200,
   KILL_POINTS:  25,
