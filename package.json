@@ -1,0 +1,12 @@
+{
+  "name": "srzfps-bot",
+  "version": "4.0.0",
+  "type": "module",
+  "main": "bot.js",
+  "scripts": { "start": "node bot.js" },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "node-fetch": "^3.3.2",
+    "ws": "^8.16.0"
+  }
+}
